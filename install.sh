@@ -11,16 +11,19 @@ MAGENTA='\033[1;35m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+MODE="install"
+declare -A SELECTED
+
 banner() {
   clear
   echo -e "${CYAN}"
   cat << 'EOF'
-  ████████╗ ██████╗ ███╗   ███╗███╗   ███╗██╗   ██╗
-  ╚══██╔══╝██╔═══██╗████╗ ████║████╗ ████║╚██╗ ██╔╝
-     ██║   ██║   ██║██╔████╔██║██╔████╔██║ ╚████╔╝ 
-     ██║   ██║   ██║██║╚██╔╝██║██║╚██╔╝██║  ╚██╔╝  
-     ██║   ╚██████╔╝██║ ╚═╝ ██║██║ ╚═╝ ██║   ██║   
-     ╚═╝    ╚═════╝ ╚═╝     ╚═╝╚═╝     ╚═╝   ╚═╝   
+  ████████╗ ██████╗ ███╗   ███╗███████╗
+  ╚══██╔══╝██╔═══██╗████╗ ████║██╔════╝
+     ██║   ██║   ██║██╔████╔██║█████╗  
+     ██║   ██║   ██║██║╚██╔╝██║██╔══╝  
+     ██║   ╚██████╔╝██║ ╚═╝ ██║███████╗
+     ╚═╝    ╚═════╝ ╚═╝     ╚═╝╚══════╝
 EOF
   echo -e "${RESET}"
   echo -e "${MAGENTA}        Pterodactyl Blueprint Extension Installer${RESET}"
@@ -51,6 +54,17 @@ install_one() {
     echo -e "${RED}Installation of ${NAME} failed.${RESET}"
   fi
   rm -f "${NAME}.blueprint"
+}
+
+remove_one() {
+  local NAME="$1"
+
+  echo -e "${YELLOW}Removing ${NAME}...${RESET}"
+  if blueprint -remove "$NAME"; then
+    echo -e "${GREEN}${NAME} was removed successfully.${RESET}"
+  else
+    echo -e "${RED}Removal of ${NAME} failed.${RESET}"
+  fi
 }
 
 # ---------- Checks ----------
@@ -84,60 +98,116 @@ if [ "${#URLS[@]}" -eq 0 ]; then
   exit 1
 fi
 
+TOTAL="${#URLS[@]}"
+
+count_selected() {
+  local c=0 k
+  for k in "${!SELECTED[@]}"; do
+    [ "${SELECTED[$k]}" = "1" ] && c=$((c+1))
+  done
+  echo "$c"
+}
+
 # ---------- Main loop ----------
 while true; do
   banner
+
+  if [ "$MODE" = "install" ]; then
+    echo -e "  Current mode: ${GREEN}${BOLD}INSTALL${RESET}"
+  else
+    echo -e "  Current mode: ${RED}${BOLD}REMOVE${RESET}"
+  fi
+  echo ""
   echo -e "${BOLD}  Available extensions:${RESET}"
   echo ""
-  i=1
-  for u in "${URLS[@]}"; do
-    printf "   ${GREEN}%2d)${RESET} %s\n" "$i" "$(basename "$u" .blueprint)"
-    i=$((i+1))
+
+  for ((n=1; n<=TOTAL; n++)); do
+    u="${URLS[$((n-1))]}"
+    if [ "${SELECTED[$n]}" = "1" ]; then
+      MARK="${GREEN}[x]${RESET}"
+    else
+      MARK="[ ]"
+    fi
+    printf "   ${GREEN}%2d)${RESET} %b %s\n" "$n" "$MARK" "$(basename "$u" .blueprint)"
   done
+
   echo ""
-  echo -e "   ${YELLOW} I)${RESET} Install ALL extensions"
-  echo -e "   ${RED} 0)${RESET} Exit"
+  echo -e "   ${YELLOW} I)${RESET} Install mode"
+  echo -e "   ${YELLOW} R)${RESET} Remove mode"
+  echo -e "   ${YELLOW} A)${RESET} Select all"
+  echo -e "   ${YELLOW} C)${RESET} Clear selection"
+  echo -e "   ${YELLOW} Q)${RESET} Quit"
+  echo -e "   ${CYAN}Enter)${RESET} Continue with selected ($(count_selected) selected)"
   echo ""
   echo -e "${CYAN}  ------------------------------------------------------${RESET}"
-  read -r -p "  Select an option: " CHOICE < /dev/tty
+  read -r -p "  Number to select/unselect, or an option: " CHOICE < /dev/tty
 
   case "$CHOICE" in
-    0|"")
+    I|i)
+      MODE="install"
+      ;;
+    R|r)
+      MODE="remove"
+      ;;
+    A|a)
+      for ((n=1; n<=TOTAL; n++)); do SELECTED[$n]=1; done
+      ;;
+    C|c)
+      SELECTED=()
+      ;;
+    Q|q|0)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
       ;;
-    I|i)
+    "")
+      if [ "$(count_selected)" -eq 0 ]; then
+        echo -e "${RED}Nothing selected. Select at least one extension first.${RESET}"
+        pause
+        continue
+      fi
+
       echo ""
-      echo -e "${YELLOW}This will install ALL ${#URLS[@]} extensions, one after another.${RESET}"
-      read -r -p "  Are you sure? (y/N): " CONFIRM < /dev/tty
+      echo -e "${BOLD}  You selected these extensions to ${MODE}:${RESET}"
+      echo ""
+      for ((n=1; n<=TOTAL; n++)); do
+        if [ "${SELECTED[$n]}" = "1" ]; then
+          echo -e "   ${GREEN}-${RESET} $(basename "${URLS[$((n-1))]}" .blueprint)"
+        fi
+      done
+      echo ""
+      read -r -p "  Are you sure you want to ${MODE} them? (y/N): " CONFIRM < /dev/tty
+
       if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
-        for u in "${URLS[@]}"; do
-          echo ""
-          install_one "$u"
+        for ((n=1; n<=TOTAL; n++)); do
+          if [ "${SELECTED[$n]}" = "1" ]; then
+            u="${URLS[$((n-1))]}"
+            echo ""
+            if [ "$MODE" = "install" ]; then
+              install_one "$u"
+            else
+              remove_one "$(basename "$u" .blueprint)"
+            fi
+          fi
         done
         echo ""
         echo -e "${GREEN}All done.${RESET}"
+        SELECTED=()
       else
         echo -e "${RED}Cancelled.${RESET}"
       fi
       pause
       ;;
     *)
-      if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "${#URLS[@]}" ]; then
+      if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "$TOTAL" ]; then
         echo -e "${RED}Invalid option.${RESET}"
         pause
         continue
       fi
-      URL="${URLS[$((CHOICE-1))]}"
-      NAME="$(basename "$URL" .blueprint)"
-      echo ""
-      read -r -p "  Install ${NAME}? (y/N): " CONFIRM < /dev/tty
-      if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
-        install_one "$URL"
+      if [ "${SELECTED[$CHOICE]}" = "1" ]; then
+        SELECTED[$CHOICE]=0
       else
-        echo -e "${RED}Cancelled.${RESET}"
+        SELECTED[$CHOICE]=1
       fi
-      pause
       ;;
   esac
 done
