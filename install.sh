@@ -26,7 +26,7 @@ banner() {
      ╚═╝    ╚═════╝ ╚═╝     ╚═╝╚══════╝
 EOF
   echo -e "${RESET}"
-  echo -e "${MAGENTA}        Pterodactyl Blueprint Installer${RESET}"
+  echo -e "${MAGENTA}        Pterodactyl Blueprint & Themes Installer${RESET}"
   echo -e "${CYAN}  ------------------------------------------------------${RESET}"
   echo ""
 }
