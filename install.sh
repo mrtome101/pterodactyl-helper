@@ -3,7 +3,7 @@
 REPO="mrtome101/pterodactyl-helper"
 PANEL="/var/www/pterodactyl"
 
-# Names listed here show up under Themes. Everything else is an extension.
+# Names listed here show up under Themes. Everything else is a Blueprint.
 THEME_NAMES=("nebula")
 
 RED='\033[1;31m'
@@ -26,7 +26,7 @@ banner() {
      ╚═╝    ╚═════╝ ╚═╝     ╚═╝╚══════╝
 EOF
   echo -e "${RESET}"
-  echo -e "${MAGENTA}        Pterodactyl Blueprint Extension Installer${RESET}"
+  echo -e "${MAGENTA}        Pterodactyl Blueprint Installer${RESET}"
   echo -e "${CYAN}  ------------------------------------------------------${RESET}"
   echo ""
 }
@@ -49,22 +49,11 @@ install_one() {
 
   echo -e "${YELLOW}Installing ${NAME}...${RESET}"
   if blueprint -install "$NAME"; then
-    echo -e "${GREEN}${NAME} was installed successfully.${RESET}"
+    echo -e "${GREEN}${NAME} installed successfully.${RESET}"
   else
     echo -e "${RED}Installation of ${NAME} failed.${RESET}"
   fi
   rm -f "${NAME}.blueprint"
-}
-
-remove_one() {
-  local NAME="$1"
-
-  echo -e "${YELLOW}Removing ${NAME}...${RESET}"
-  if blueprint -remove "$NAME"; then
-    echo -e "${GREEN}${NAME} was removed successfully.${RESET}"
-  else
-    echo -e "${RED}Removal of ${NAME} failed.${RESET}"
-  fi
 }
 
 # ---------- Checks ----------
@@ -76,7 +65,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if ! command -v blueprint >/dev/null 2>&1; then
-  echo -e "${RED}Blueprint was not installed. Install Blueprint first, then run this again.${RESET}"
+  echo -e "${RED}Blueprint is not installed. Install Blueprint first, then run this again.${RESET}"
   exit 1
 fi
 
@@ -88,7 +77,7 @@ fi
 cd "$PANEL" || exit 1
 
 # ---------- Fetch list ----------
-echo -e "${YELLOW}Fetching extension list...${RESET}"
+echo -e "${YELLOW}Fetching list from GitHub...${RESET}"
 mapfile -t ALL_URLS < <(curl -s "https://api.github.com/repos/${REPO}/releases/latest" \
   | grep -o '"browser_download_url": *"[^"]*\.blueprint"' \
   | sed 's/.*"\(https[^"]*\)"$/\1/')
@@ -98,8 +87,8 @@ if [ "${#ALL_URLS[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# ---------- Split into extensions and themes ----------
-EXT_URLS=()
+# ---------- Split: Blueprints / Themes ----------
+BP_URLS=()
 THEME_URLS=()
 for u in "${ALL_URLS[@]}"; do
   n="$(basename "$u" .blueprint)"
@@ -110,23 +99,21 @@ for u in "${ALL_URLS[@]}"; do
   if [ "$is_theme" -eq 1 ]; then
     THEME_URLS+=("$u")
   else
-    EXT_URLS+=("$u")
+    BP_URLS+=("$u")
   fi
 done
 
-# ---------- Selection menu ----------
-# Usage: select_menu "Title" LIST_ARRAY_NAME SINGLE(0/1)
-select_menu() {
+# ---------- Section menu ----------
+# Usage: section_menu "Title" LIST_ARRAY_NAME SINGLE(0=multi, 1=only one)
+section_menu() {
   local TITLE="$1"
   local -n LIST="$2"
   local SINGLE="$3"
   local TOTAL="${#LIST[@]}"
-  local MODE="install"
   local -A SEL=()
-  local n u k count CHOICE CONFIRM MARK was
+  local n count k CHOICE CONFIRM MARK
 
   if [ "$TOTAL" -eq 0 ]; then
-    echo ""
     echo -e "${RED}No ${TITLE} found in the latest release.${RESET}"
     pause
     return 0
@@ -135,21 +122,15 @@ select_menu() {
   while true; do
     banner
     echo -e "  ${BOLD}${TITLE}${RESET}"
-    if [ "$MODE" = "install" ]; then
-      echo -e "  Current mode: ${GREEN}${BOLD}INSTALL${RESET}"
-    else
-      echo -e "  Current mode: ${RED}${BOLD}REMOVE${RESET}"
-    fi
     echo ""
 
     for ((n=1; n<=TOTAL; n++)); do
-      u="${LIST[$((n-1))]}"
       if [ "${SEL[$n]}" = "1" ]; then
         MARK="${GREEN}[x]${RESET}"
       else
         MARK="[ ]"
       fi
-      printf "   ${GREEN}%2d)${RESET} %b %s\n" "$n" "$MARK" "$(basename "$u" .blueprint)"
+      printf "   ${GREEN}%2d)${RESET} %b %s\n" "$n" "$MARK" "$(basename "${LIST[$((n-1))]}" .blueprint)"
     done
 
     count=0
@@ -158,43 +139,15 @@ select_menu() {
     done
 
     echo ""
-    echo -e "   ${YELLOW} I)${RESET} Install mode"
-    echo -e "   ${YELLOW} R)${RESET} Remove mode"
-    if [ "$SINGLE" -eq 0 ]; then
-      echo -e "   ${YELLOW} A)${RESET} Select all"
-    fi
-    echo -e "   ${YELLOW} C)${RESET} Clear selection"
-    echo -e "   ${YELLOW} B)${RESET} Back to main menu"
-    echo -e "   ${YELLOW} Q)${RESET} Quit"
-    echo -e "   ${CYAN}Enter)${RESET} Continue with selected (${count} selected)"
+    echo -e "   ${YELLOW} B)${RESET} Back"
+    echo -e "   ${CYAN}Enter)${RESET} Install selected (${count} selected)"
     echo ""
     echo -e "${CYAN}  ------------------------------------------------------${RESET}"
-    read -r -p "  Number to select/unselect, or an option: " CHOICE < /dev/tty
+    read -r -p "  Enter a number to select/unselect: " CHOICE < /dev/tty
 
     case "$CHOICE" in
-      I|i)
-        MODE="install"
-        ;;
-      R|r)
-        MODE="remove"
-        ;;
-      A|a)
-        if [ "$SINGLE" -eq 0 ]; then
-          for ((n=1; n<=TOTAL; n++)); do SEL[$n]=1; done
-        else
-          echo -e "${RED}Only one can be selected here.${RESET}"
-          pause
-        fi
-        ;;
-      C|c)
-        SEL=()
-        ;;
       B|b)
         return 0
-        ;;
-      Q|q|0)
-        echo -e "${GREEN}Goodbye!${RESET}"
-        exit 0
         ;;
       "")
         if [ "$count" -eq 0 ]; then
@@ -204,26 +157,18 @@ select_menu() {
         fi
 
         echo ""
-        echo -e "${BOLD}  You selected these to ${MODE}:${RESET}"
-        echo ""
+        echo -e "${BOLD}  These will be installed:${RESET}"
         for ((n=1; n<=TOTAL; n++)); do
-          if [ "${SEL[$n]}" = "1" ]; then
-            echo -e "   ${GREEN}-${RESET} $(basename "${LIST[$((n-1))]}" .blueprint)"
-          fi
+          [ "${SEL[$n]}" = "1" ] && echo -e "   ${GREEN}-${RESET} $(basename "${LIST[$((n-1))]}" .blueprint)"
         done
         echo ""
-        read -r -p "  Are you sure you want to ${MODE} them? (y/N): " CONFIRM < /dev/tty
+        read -r -p "  Install them? (y/N): " CONFIRM < /dev/tty
 
         if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
           for ((n=1; n<=TOTAL; n++)); do
             if [ "${SEL[$n]}" = "1" ]; then
-              u="${LIST[$((n-1))]}"
               echo ""
-              if [ "$MODE" = "install" ]; then
-                install_one "$u"
-              else
-                remove_one "$(basename "$u" .blueprint)"
-              fi
+              install_one "${LIST[$((n-1))]}"
             fi
           done
           echo ""
@@ -241,9 +186,11 @@ select_menu() {
           continue
         fi
         if [ "$SINGLE" -eq 1 ]; then
-          was="${SEL[$CHOICE]}"
-          SEL=()
-          if [ "$was" != "1" ]; then
+          # Themes: only one can be selected at a time
+          if [ "${SEL[$CHOICE]}" = "1" ]; then
+            SEL=()
+          else
+            SEL=()
             SEL[$CHOICE]=1
           fi
         else
@@ -258,13 +205,14 @@ select_menu() {
   done
 }
 
-# ---------- Main menu ----------
+# ---------- Main menu (left: Blueprints | right: Themes) ----------
 while true; do
   banner
-  echo -e "${BOLD}  Main menu:${RESET}"
-  echo ""
-  echo -e "   ${GREEN} 1)${RESET} Blueprint Extensions (${#EXT_URLS[@]})"
-  echo -e "   ${GREEN} 2)${RESET} Themes (${#THEME_URLS[@]})"
+  LEFT="Blueprints (${#BP_URLS[@]})"
+  RIGHT="Themes (${#THEME_URLS[@]})"
+  echo -e "   ${CYAN}┌──────────────────────────┬──────────────────────────┐${RESET}"
+  printf "   ${CYAN}│${RESET} ${GREEN}1)${RESET} %-22s ${CYAN}│${RESET} ${GREEN}2)${RESET} %-22s ${CYAN}│${RESET}\n" "$LEFT" "$RIGHT"
+  echo -e "   ${CYAN}└──────────────────────────┴──────────────────────────┘${RESET}"
   echo ""
   echo -e "   ${RED} 0)${RESET} Exit"
   echo ""
@@ -272,12 +220,8 @@ while true; do
   read -r -p "  Select an option: " TOP < /dev/tty
 
   case "$TOP" in
-    1)
-      select_menu "Blueprint Extensions" EXT_URLS 0
-      ;;
-    2)
-      select_menu "Themes" THEME_URLS 1
-      ;;
+    1) section_menu "Blueprints" BP_URLS 0 ;;
+    2) section_menu "Themes" THEME_URLS 1 ;;
     0|Q|q)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
