@@ -36,6 +36,14 @@ pause() {
   read -r -p "Press Enter to continue..." _ < /dev/tty
 }
 
+is_theme_name() {
+  local t
+  for t in "${THEME_NAMES[@]}"; do
+    [ "$1" = "$t" ] && return 0
+  done
+  return 1
+}
+
 # ---------- Blueprint framework installer ----------
 install_blueprint_framework() {
   echo -e "${YELLOW}Installing Blueprint framework...${RESET}"
@@ -127,6 +135,129 @@ install_one() {
   rm -f "${NAME}.blueprint"
 }
 
+# ---------- Delete / Uninstall ----------
+INSTALLED=()
+
+# Reads installed extensions from Blueprint's extensions folder
+get_installed() {
+  INSTALLED=()
+  local dir="$PANEL/.blueprint/extensions"
+  local d id
+  [ -d "$dir" ] || return 0
+  for d in "$dir"/*/; do
+    [ -d "$d" ] || continue
+    id="$(basename "$d")"
+    [ "$id" = "blueprint" ] && continue   # framework's own entry, never list it
+    INSTALLED+=("$id")
+  done
+}
+
+remove_one() {
+  local ID="$1"
+  cd "$PANEL" || return 1
+
+  echo -e "${YELLOW}Removing ${ID}...${RESET}"
+  # blueprint -remove asks for a y/N confirmation, we already confirmed above
+  echo "y" | blueprint -remove "$ID"
+
+  if [ ! -d "$PANEL/.blueprint/extensions/$ID" ]; then
+    echo -e "${GREEN}${ID} removed successfully.${RESET}"
+  else
+    echo -e "${RED}Removal of ${ID} failed.${RESET}"
+  fi
+}
+
+remove_menu() {
+  local -A SEL=()
+  local n count k CHOICE CONFIRM MARK TAG TOTAL
+
+  while true; do
+    get_installed
+    TOTAL="${#INSTALLED[@]}"
+
+    banner
+    echo -e "  ${BOLD}Delete / Uninstall${RESET}"
+    echo ""
+
+    if [ "$TOTAL" -eq 0 ]; then
+      echo -e "${RED}Nothing installed to delete.${RESET}"
+      pause
+      return 0
+    fi
+
+    for ((n=1; n<=TOTAL; n++)); do
+      if [ "${SEL[$n]}" = "1" ]; then
+        MARK="${GREEN}[x]${RESET}"
+      else
+        MARK="[ ]"
+      fi
+      TAG=""
+      is_theme_name "${INSTALLED[$((n-1))]}" && TAG=" ${MAGENTA}(theme)${RESET}"
+      printf "   ${GREEN}%2d)${RESET} %b %s%b\n" "$n" "$MARK" "${INSTALLED[$((n-1))]}" "$TAG"
+    done
+
+    count=0
+    for k in "${!SEL[@]}"; do
+      [ "${SEL[$k]}" = "1" ] && count=$((count+1))
+    done
+
+    echo ""
+    echo -e "   ${YELLOW} B)${RESET} Back"
+    echo -e "   ${CYAN}Enter)${RESET} Delete selected (${count} selected)"
+    echo ""
+    echo -e "${CYAN}  ------------------------------------------------------${RESET}"
+    read -r -p "  Enter a number to select/unselect: " CHOICE < /dev/tty
+
+    case "$CHOICE" in
+      B|b)
+        return 0
+        ;;
+      "")
+        if [ "$count" -eq 0 ]; then
+          echo -e "${RED}Nothing selected. Select at least one first.${RESET}"
+          pause
+          continue
+        fi
+
+        echo ""
+        echo -e "${BOLD}  These will be DELETED:${RESET}"
+        for ((n=1; n<=TOTAL; n++)); do
+          [ "${SEL[$n]}" = "1" ] && echo -e "   ${RED}-${RESET} ${INSTALLED[$((n-1))]}"
+        done
+        echo ""
+        read -r -p "  Are you sure? (y/N): " CONFIRM < /dev/tty
+
+        if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
+          for ((n=1; n<=TOTAL; n++)); do
+            if [ "${SEL[$n]}" = "1" ]; then
+              echo ""
+              remove_one "${INSTALLED[$((n-1))]}"
+            fi
+          done
+          echo ""
+          echo -e "${GREEN}All done.${RESET}"
+          SEL=()   # list changes after deletion, so reset selection
+        else
+          echo -e "${RED}Cancelled.${RESET}"
+        fi
+        pause
+        ;;
+      *)
+        if ! [[ "$CHOICE" =~ ^[0-9]+$ ]] || [ "$CHOICE" -lt 1 ] || [ "$CHOICE" -gt "$TOTAL" ]; then
+          echo -e "${RED}Invalid option.${RESET}"
+          pause
+          continue
+        fi
+        if [ "${SEL[$CHOICE]}" = "1" ]; then
+          SEL[$CHOICE]=0
+        else
+          SEL[$CHOICE]=1
+        fi
+        ;;
+    esac
+  done
+}
+
 # ---------- Checks ----------
 banner
 
@@ -181,11 +312,7 @@ BP_URLS=()
 THEME_URLS=()
 for u in "${ALL_URLS[@]}"; do
   n="$(basename "$u" .blueprint)"
-  is_theme=0
-  for t in "${THEME_NAMES[@]}"; do
-    [ "$n" = "$t" ] && is_theme=1
-  done
-  if [ "$is_theme" -eq 1 ]; then
+  if is_theme_name "$n"; then
     THEME_URLS+=("$u")
   else
     BP_URLS+=("$u")
@@ -303,6 +430,7 @@ while true; do
   printf "   ${CYAN}│${RESET} ${GREEN}1)${RESET} %-22s ${CYAN}│${RESET} ${GREEN}2)${RESET} %-22s ${CYAN}│${RESET}\n" "$LEFT" "$RIGHT"
   echo -e "   ${CYAN}└──────────────────────────┴──────────────────────────┘${RESET}"
   echo ""
+  echo -e "   ${YELLOW} 3)${RESET} Delete / Uninstall"
   echo -e "   ${RED} 0)${RESET} Exit"
   echo ""
   echo -e "${CYAN}  ------------------------------------------------------${RESET}"
@@ -311,6 +439,7 @@ while true; do
   case "$TOP" in
     1) section_menu "Blueprints" BP_URLS 0 ;;
     2) section_menu "Themes" THEME_URLS 1 ;;
+    3) remove_menu ;;
     0|Q|q)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
