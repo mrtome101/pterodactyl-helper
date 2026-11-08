@@ -36,6 +36,77 @@ pause() {
   read -r -p "Press Enter to continue..." _ < /dev/tty
 }
 
+# ---------- Blueprint framework installer ----------
+install_blueprint_framework() {
+  echo -e "${YELLOW}Installing Blueprint framework...${RESET}"
+
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo -e "${RED}Auto-install only supports Debian/Ubuntu (apt). Install Blueprint manually.${RESET}"
+    return 1
+  fi
+
+  cd "$PANEL" || return 1
+
+  echo -e "${YELLOW}Installing dependencies...${RESET}"
+  apt-get update -y
+  apt-get install -y curl wget unzip zip git ca-certificates gnupg || return 1
+
+  # Node.js 20
+  if ! command -v node >/dev/null 2>&1; then
+    echo -e "${YELLOW}Installing Node.js 20...${RESET}"
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || return 1
+    apt-get install -y nodejs || return 1
+  fi
+
+  # Yarn
+  if ! command -v yarn >/dev/null 2>&1; then
+    npm i -g yarn || return 1
+  fi
+
+  echo -e "${YELLOW}Running yarn install in panel...${RESET}"
+  yarn install || return 1
+
+  echo -e "${YELLOW}Downloading latest Blueprint release...${RESET}"
+  local BP_URL
+  BP_URL="$(curl -s https://api.github.com/repos/BlueprintFramework/framework/releases/latest \
+    | grep -o '"browser_download_url": *"[^"]*release.zip"' \
+    | sed 's/.*"\(https[^"]*\)"$/\1/' | head -n 1)"
+
+  if [ -z "$BP_URL" ]; then
+    echo -e "${RED}Could not find Blueprint release.zip (GitHub API limit or network issue).${RESET}"
+    return 1
+  fi
+
+  wget -O release.zip "$BP_URL" || return 1
+  unzip -o release.zip || return 1
+  rm -f release.zip
+
+  # Detect web user (www-data on Debian/Ubuntu, nginx on some setups)
+  local WEBUSER="www-data"
+  if ! id "$WEBUSER" >/dev/null 2>&1 && id nginx >/dev/null 2>&1; then
+    WEBUSER="nginx"
+  fi
+
+  cat > .blueprintrc << RC
+WEBUSER="${WEBUSER}";
+OWNERSHIP="${WEBUSER}:${WEBUSER}";
+USERSHELL="/bin/bash";
+RC
+
+  chmod +x blueprint.sh
+  bash blueprint.sh
+
+  # Refresh command lookup
+  hash -r
+  if command -v blueprint >/dev/null 2>&1; then
+    echo -e "${GREEN}Blueprint installed successfully.${RESET}"
+    return 0
+  else
+    echo -e "${RED}Blueprint install finished but the 'blueprint' command was not found.${RESET}"
+    return 1
+  fi
+}
+
 install_one() {
   local URL="$1"
   local NAME
@@ -64,17 +135,35 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-if ! command -v blueprint >/dev/null 2>&1; then
-  echo -e "${RED}Blueprint is not installed. Install Blueprint first, then run this again.${RESET}"
-  exit 1
-fi
-
 if [ ! -d "$PANEL" ]; then
   echo -e "${RED}Panel folder not found: ${PANEL}${RESET}"
   exit 1
 fi
 
 cd "$PANEL" || exit 1
+
+if ! command -v blueprint >/dev/null 2>&1; then
+  echo -e "${YELLOW}Blueprint is not installed.${RESET}"
+  read -r -p "Install Blueprint now? (y/N): " ANS < /dev/tty
+  if [ "$ANS" != "y" ] && [ "$ANS" != "Y" ]; then
+    echo -e "${RED}Blueprint is required. Exiting.${RESET}"
+    exit 1
+  fi
+
+  echo -e "${YELLOW}Tip: take a backup of your panel before continuing.${RESET}"
+  read -r -p "Continue? (y/N): " ANS2 < /dev/tty
+  if [ "$ANS2" != "y" ] && [ "$ANS2" != "Y" ]; then
+    echo -e "${RED}Cancelled.${RESET}"
+    exit 1
+  fi
+
+  if ! install_blueprint_framework; then
+    echo -e "${RED}Blueprint install failed. Check the errors above.${RESET}"
+    exit 1
+  fi
+  cd "$PANEL" || exit 1
+  sleep 2
+fi
 
 # ---------- Fetch list ----------
 echo -e "${YELLOW}Fetching list from GitHub...${RESET}"
