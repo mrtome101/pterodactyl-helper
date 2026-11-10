@@ -358,7 +358,7 @@ section_menu() {
       if is_installed "$NAME"; then
         DOT="${GREEN}●${RESET}"
       else
-        DOT=" "
+        DOT="${RED}○${RESET}"
       fi
 
       printf "   ${GREEN}%2d)${RESET} %b %b %s\n" "$n" "$MARK" "$DOT" "$NAME"
@@ -370,7 +370,11 @@ section_menu() {
     done
 
     echo ""
-    echo -e "   ${GREEN}●${RESET} = already installed"
+    echo -e "   ${GREEN}●${RESET} = installed   ${RED}○${RESET} = not installed"
+    echo ""
+    if [ "$SINGLE" -eq 0 ]; then
+      echo -e "   ${GREEN} A)${RESET} Select All"
+    fi
     echo -e "   ${YELLOW} B)${RESET} Back"
     echo -e "   ${CYAN}Enter)${RESET} Install selected (${count} selected)"
     echo ""
@@ -380,6 +384,21 @@ section_menu() {
     case "$CHOICE" in
       B|b)
         return 0
+        ;;
+      A|a)
+        if [ "$SINGLE" -eq 1 ]; then
+          echo -e "${RED}Select All is not available here (only one theme at a time).${RESET}"
+          pause
+          continue
+        fi
+        # If everything is already selected, A again will unselect all
+        if [ "$count" -eq "$TOTAL" ]; then
+          SEL=()
+        else
+          for ((n=1; n<=TOTAL; n++)); do
+            SEL[$n]=1
+          done
+        fi
         ;;
       "")
         if [ "$count" -eq 0 ]; then
