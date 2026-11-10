@@ -44,6 +44,11 @@ is_theme_name() {
   return 1
 }
 
+# Checks if an extension is already installed in the panel
+is_installed() {
+  [ -d "$PANEL/.blueprint/extensions/$1" ]
+}
+
 # ---------- Blueprint framework installer ----------
 install_blueprint_framework() {
   echo -e "${YELLOW}Installing Blueprint framework...${RESET}"
@@ -327,7 +332,7 @@ section_menu() {
   local SINGLE="$3"
   local TOTAL="${#LIST[@]}"
   local -A SEL=()
-  local n count k CHOICE CONFIRM MARK
+  local n count k CHOICE CONFIRM MARK NAME DOT
 
   if [ "$TOTAL" -eq 0 ]; then
     echo -e "${RED}No ${TITLE} found in the latest release.${RESET}"
@@ -340,13 +345,23 @@ section_menu() {
     echo -e "  ${BOLD}${TITLE}${RESET}"
     echo ""
 
+    # List is redrawn every loop, so the dot refreshes right after an install
     for ((n=1; n<=TOTAL; n++)); do
+      NAME="$(basename "${LIST[$((n-1))]}" .blueprint)"
+
       if [ "${SEL[$n]}" = "1" ]; then
         MARK="${GREEN}[x]${RESET}"
       else
         MARK="[ ]"
       fi
-      printf "   ${GREEN}%2d)${RESET} %b %s\n" "$n" "$MARK" "$(basename "${LIST[$((n-1))]}" .blueprint)"
+
+      if is_installed "$NAME"; then
+        DOT="${GREEN}●${RESET}"
+      else
+        DOT=" "
+      fi
+
+      printf "   ${GREEN}%2d)${RESET} %b %b %s\n" "$n" "$MARK" "$DOT" "$NAME"
     done
 
     count=0
@@ -355,6 +370,7 @@ section_menu() {
     done
 
     echo ""
+    echo -e "   ${GREEN}●${RESET} = already installed"
     echo -e "   ${YELLOW} B)${RESET} Back"
     echo -e "   ${CYAN}Enter)${RESET} Install selected (${count} selected)"
     echo ""
