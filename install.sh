@@ -2,6 +2,7 @@
 
 REPO="mrtome101/pterodactyl-helper"
 PANEL="/var/www/pterodactyl"
+BACKUP_DIR="/root/blueprint-backups"
 
 # Names listed here show up under Themes. Everything else is a Blueprint.
 THEME_NAMES=("nebula")
@@ -36,6 +37,12 @@ pause() {
   read -r -p "Press Enter to continue..." _ < /dev/tty
 }
 
+ask_yn() {
+  local a=""
+  read -r -p "$1 (y/N): " a < /dev/tty
+  [ "$a" = "y" ] || [ "$a" = "Y" ]
+}
+
 is_theme_name() {
   local t
   for t in "${THEME_NAMES[@]}"; do
@@ -49,75 +56,367 @@ is_installed() {
   [ -d "$PANEL/.blueprint/extensions/$1" ]
 }
 
-# ---------- Blueprint framework installer ----------
-install_blueprint_framework() {
-  echo -e "${YELLOW}Installing Blueprint framework...${RESET}"
+# Checks if the Blueprint framework itself is installed
+blueprint_installed() {
+  [ -f "$PANEL/blueprint.sh" ] && [ -d "$PANEL/.blueprint" ]
+}
 
-  if ! command -v apt-get >/dev/null 2>&1; then
-    echo -e "${RED}Auto-install only supports Debian/Ubuntu (apt). Install Blueprint manually.${RESET}"
+# =====================================================================
+#  Blueprint framework: safe install / remove
+#  - full backup first (files + .env + database dump)
+#  - panel goes into maintenance mode while working
+#  - if anything fails, the panel is restored from the backup
+#  - users, servers, nodes and the database are never deleted
+# =====================================================================
+BP_BACKUP_FILE=""
+BP_ENV_FILE=""
+BP_DB_FILE=""
+BP_BACKUP_DONE=0
+BP_PANEL_DOWN=0
+BP_TMP=""
+BP_BIN=""
+WEBUSER="www-data"
+WEBGROUP="www-data"
+
+artisan() { ( cd "$PANEL" && php artisan "$@" ); }
+
+envget() {
+  grep -E "^$1=" "$PANEL/.env" 2>/dev/null | head -n1 | cut -d= -f2- \
+    | sed -e 's/^"//' -e 's/"$//' -e "s/^'//" -e "s/'$//"
+}
+
+# Web user = owner of the panel files (falls back to www-data / nginx)
+detect_webuser() {
+  WEBUSER="$(stat -c '%U' "$PANEL/artisan" 2>/dev/null)"
+  WEBGROUP="$(stat -c '%G' "$PANEL/artisan" 2>/dev/null)"
+  if [ -z "$WEBUSER" ] || [ "$WEBUSER" = "root" ]; then
+    WEBUSER="www-data"
+    if ! id "$WEBUSER" >/dev/null 2>&1 && id nginx >/dev/null 2>&1; then
+      WEBUSER="nginx"
+    fi
+    WEBGROUP="$WEBUSER"
+  fi
+}
+
+bp_preflight() {
+  if [ ! -f "$PANEL/artisan" ] || [ ! -f "$PANEL/.env" ]; then
+    echo -e "${RED}Valid Pterodactyl panel not found in ${PANEL}.${RESET}"
     return 1
   fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo -e "${RED}This only supports Debian/Ubuntu (apt).${RESET}"
+    return 1
+  fi
+  if ! command -v php >/dev/null 2>&1 || ! command -v tar >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1; then
+    echo -e "${RED}php, tar and curl are required.${RESET}"
+    return 1
+  fi
+  return 0
+}
 
-  cd "$PANEL" || return 1
+bp_backup() {
+  local TS
+  TS="$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$BACKUP_DIR" && chmod 700 "$BACKUP_DIR" || return 1
+
+  BP_BACKUP_FILE="$BACKUP_DIR/panel-$TS.tar.gz"
+  BP_ENV_FILE="$BACKUP_DIR/env-$TS.bak"
+  BP_DB_FILE="$BACKUP_DIR/db-$TS.sql"
+  BP_BACKUP_DONE=0
+
+  echo -e "${YELLOW}Creating backup (this can take a while)...${RESET}"
+  if ! tar -czf "$BP_BACKUP_FILE" --exclude='node_modules' \
+       -C "$(dirname "$PANEL")" "$(basename "$PANEL")"; then
+    rm -f "$BP_BACKUP_FILE"
+    echo -e "${RED}Backup failed (disk full?). Nothing was changed.${RESET}"
+    return 1
+  fi
+  chmod 600 "$BP_BACKUP_FILE"
+  cp -p "$PANEL/.env" "$BP_ENV_FILE" && chmod 600 "$BP_ENV_FILE"
+  BP_BACKUP_DONE=1
+  echo -e "${GREEN}Files backup: ${BP_BACKUP_FILE}${RESET}"
+
+  # Database dump (optional, best effort)
+  local H P U D PW
+  H="$(envget DB_HOST)"; P="$(envget DB_PORT)"; U="$(envget DB_USERNAME)"
+  D="$(envget DB_DATABASE)"; PW="$(envget DB_PASSWORD)"
+  if command -v mysqldump >/dev/null 2>&1; then
+    if MYSQL_PWD="$PW" mysqldump -h "${H:-127.0.0.1}" -P "${P:-3306}" -u "$U" \
+         --single-transaction "$D" > "$BP_DB_FILE" 2>/dev/null; then
+      chmod 600 "$BP_DB_FILE"
+      echo -e "${GREEN}Database backup: ${BP_DB_FILE}${RESET}"
+    else
+      rm -f "$BP_DB_FILE"
+      echo -e "${YELLOW}Database dump skipped (could not connect).${RESET}"
+    fi
+  else
+    echo -e "${YELLOW}mysqldump not found, database dump skipped.${RESET}"
+  fi
+  return 0
+}
+
+bp_rollback() {
+  echo ""
+  echo -e "${RED}Something went wrong. Restoring the panel from backup...${RESET}"
+  if [ "$BP_BACKUP_DONE" = "1" ] && [ -f "$BP_BACKUP_FILE" ] \
+     && [ -n "$PANEL" ] && tar -tzf "$BP_BACKUP_FILE" >/dev/null 2>&1; then
+    find "$PANEL" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    if tar -xzf "$BP_BACKUP_FILE" -C "$(dirname "$PANEL")"; then
+      echo -e "${GREEN}Panel files restored.${RESET}"
+    else
+      echo -e "${RED}Restore failed! Restore manually with:${RESET}"
+      echo "  tar -xzf $BP_BACKUP_FILE -C $(dirname "$PANEL")"
+    fi
+  else
+    echo -e "${RED}Backup is not usable, nothing restored.${RESET}"
+  fi
+  artisan up >/dev/null 2>&1
+  BP_PANEL_DOWN=0
+  echo -e "${YELLOW}Backup folder: ${BACKUP_DIR}${RESET}"
+}
+
+# Runs a function in a strict subshell (stops at the first error).
+# On any failure or Ctrl+C the panel is rolled back from the backup.
+bp_run_guarded() {
+  local rc
+  trap ':' INT
+  ( set -Eeuo pipefail; "$1" )
+  rc=$?
+  trap - INT
+  if [ "$rc" -ne 0 ]; then
+    bp_rollback
+    return 1
+  fi
+  return 0
+}
+
+_bp_install_steps() {
+  export DEBIAN_FRONTEND=noninteractive
 
   echo -e "${YELLOW}Installing dependencies...${RESET}"
   apt-get update -y
-  apt-get install -y curl wget unzip zip git ca-certificates gnupg || return 1
+  apt-get install -y curl wget unzip zip git ca-certificates gnupg
 
-  # Node.js 20
-  if ! command -v node >/dev/null 2>&1; then
-    echo -e "${YELLOW}Installing Node.js 20...${RESET}"
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - || return 1
-    apt-get install -y nodejs || return 1
+  # Node.js 22 (as per the official Blueprint guide)
+  local NODE_MAJOR=0
+  if command -v node >/dev/null 2>&1; then
+    NODE_MAJOR="$(node -v | sed 's/^v\([0-9]*\).*/\1/')"
+  fi
+  if [ "$NODE_MAJOR" -lt 22 ]; then
+    echo -e "${YELLOW}Installing Node.js 22...${RESET}"
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+      | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+      > /etc/apt/sources.list.d/nodesource.list
+    apt-get update -y
+    apt-get install -y nodejs
   fi
 
-  # Yarn
-  if ! command -v yarn >/dev/null 2>&1; then
-    npm i -g yarn || return 1
-  fi
+  command -v yarn >/dev/null 2>&1 || npm i -g yarn
 
-  echo -e "${YELLOW}Running yarn install in panel...${RESET}"
-  yarn install || return 1
+  cd "$PANEL"
 
   echo -e "${YELLOW}Downloading latest Blueprint release...${RESET}"
-  local BP_URL
-  BP_URL="$(curl -s https://api.github.com/repos/BlueprintFramework/framework/releases/latest \
-    | grep -o '"browser_download_url": *"[^"]*release.zip"' \
-    | sed 's/.*"\(https[^"]*\)"$/\1/' | head -n 1)"
-
-  if [ -z "$BP_URL" ]; then
-    echo -e "${RED}Could not find Blueprint release.zip (GitHub API limit or network issue).${RESET}"
-    return 1
-  fi
-
-  wget -O release.zip "$BP_URL" || return 1
-  unzip -o release.zip || return 1
+  wget -q -O "$PANEL/release.zip" \
+    "https://github.com/BlueprintFramework/framework/releases/latest/download/release.zip"
+  unzip -o -q release.zip
   rm -f release.zip
 
-  # Detect web user (www-data on Debian/Ubuntu, nginx on some setups)
-  local WEBUSER="www-data"
-  if ! id "$WEBUSER" >/dev/null 2>&1 && id nginx >/dev/null 2>&1; then
-    WEBUSER="nginx"
-  fi
+  echo -e "${YELLOW}Running yarn install in panel...${RESET}"
+  yarn install
 
   cat > .blueprintrc << RC
 WEBUSER="${WEBUSER}";
-OWNERSHIP="${WEBUSER}:${WEBUSER}";
+OWNERSHIP="${WEBUSER}:${WEBGROUP}";
 USERSHELL="/bin/bash";
 RC
 
+  echo -e "${YELLOW}Running Blueprint (building assets, please wait)...${RESET}"
   chmod +x blueprint.sh
   bash blueprint.sh
+}
 
-  # Refresh command lookup
-  hash -r
-  if command -v blueprint >/dev/null 2>&1; then
-    echo -e "${GREEN}Blueprint installed successfully.${RESET}"
+install_blueprint_framework() {
+  bp_preflight || return 1
+
+  if blueprint_installed; then
+    echo -e "${GREEN}Blueprint is already installed.${RESET}"
     return 0
-  else
-    echo -e "${RED}Blueprint install finished but the 'blueprint' command was not found.${RESET}"
+  fi
+
+  echo ""
+  echo -e "${YELLOW}The panel will be in maintenance mode for a few minutes.${RESET}"
+  echo -e "${YELLOW}Game servers keep running. Best done at a low-traffic time.${RESET}"
+  if ! ask_yn "Install Blueprint now?"; then
+    echo -e "${RED}Cancelled.${RESET}"
     return 1
   fi
+
+  detect_webuser
+  bp_backup || return 1
+
+  echo -e "${YELLOW}Putting panel into maintenance mode...${RESET}"
+  artisan down >/dev/null 2>&1
+  BP_PANEL_DOWN=1
+
+  if ! bp_run_guarded _bp_install_steps; then
+    echo -e "${RED}Blueprint install failed. Panel was restored.${RESET}"
+    return 1
+  fi
+
+  artisan up >/dev/null 2>&1
+  BP_PANEL_DOWN=0
+  hash -r
+
+  if blueprint_installed; then
+    echo -e "${GREEN}Blueprint installed successfully.${RESET}"
+    echo -e "${CYAN}Backup kept in ${BACKUP_DIR} (delete it when you no longer need it).${RESET}"
+    return 0
+  fi
+  echo -e "${RED}Install finished but Blueprint files were not found.${RESET}"
+  return 1
+}
+
+_bp_remove_steps() {
+  cd "$PANEL"
+
+  echo -e "${YELLOW}Removing Blueprint files...${RESET}"
+  rm -rf .blueprint blueprint.sh .blueprintrc node_modules \
+         public/extensions public/assets app/BlueprintFramework
+  if [ -n "$BP_BIN" ] && [ -f "$BP_BIN" ]; then
+    rm -f "$BP_BIN"
+  fi
+
+  echo -e "${YELLOW}Restoring official Pterodactyl files...${RESET}"
+  tar -xzf "$BP_TMP/panel.tar.gz" -C "$PANEL"
+  chmod -R 755 storage/* bootstrap/cache
+
+  echo -e "${YELLOW}Installing composer dependencies...${RESET}"
+  COMPOSER_ALLOW_SUPERUSER=1 composer install --no-dev --optimize-autoloader --no-interaction
+
+  echo -e "${YELLOW}Clearing cache and migrating database...${RESET}"
+  php artisan view:clear
+  php artisan config:clear
+  php artisan migrate --seed --force
+
+  chown -R "$WEBUSER:$WEBGROUP" "$PANEL"/* "$PANEL"/.env
+  php artisan queue:restart
+}
+
+remove_blueprint_framework() {
+  bp_preflight || return 1
+
+  if ! blueprint_installed; then
+    echo -e "${RED}Blueprint is not installed.${RESET}"
+    return 1
+  fi
+  if ! command -v composer >/dev/null 2>&1; then
+    echo -e "${RED}composer is required to restore the panel but was not found.${RESET}"
+    return 1
+  fi
+
+  get_installed
+  echo ""
+  echo -e "${BOLD}  Removing Blueprint will:${RESET}"
+  echo -e "   ${RED}-${RESET} replace panel files with a fresh official Pterodactyl release"
+  echo -e "   ${RED}-${RESET} remove Blueprint AND all its extensions/themes"
+  if [ "${#INSTALLED[@]}" -gt 0 ]; then
+    echo -e "     (installed now: ${INSTALLED[*]})"
+  fi
+  echo -e "   ${RED}-${RESET} remove any manual edits / custom themes made outside Blueprint"
+  echo -e "   ${GREEN}+${RESET} .env, database, users, servers and nodes stay SAFE"
+  echo -e "   ${GREEN}+${RESET} a full backup is created first in ${BACKUP_DIR}"
+  echo ""
+  if ! ask_yn "Remove Blueprint?"; then
+    echo -e "${RED}Cancelled.${RESET}"
+    return 1
+  fi
+
+  detect_webuser
+  BP_BIN="$(command -v blueprint 2>/dev/null)"
+
+  # Download + verify the official panel BEFORE touching anything
+  BP_TMP="$(mktemp -d)"
+  echo -e "${YELLOW}Downloading official Pterodactyl panel...${RESET}"
+  if ! curl -fsSL -o "$BP_TMP/panel.tar.gz" \
+       "https://github.com/pterodactyl/panel/releases/latest/download/panel.tar.gz" \
+     || ! tar -tzf "$BP_TMP/panel.tar.gz" >/dev/null 2>&1; then
+    echo -e "${RED}Could not download the panel files. Nothing was changed.${RESET}"
+    rm -rf "$BP_TMP"
+    return 1
+  fi
+
+  if ! bp_backup; then
+    rm -rf "$BP_TMP"
+    return 1
+  fi
+
+  echo -e "${YELLOW}Putting panel into maintenance mode...${RESET}"
+  artisan down >/dev/null 2>&1
+  BP_PANEL_DOWN=1
+
+  if ! bp_run_guarded _bp_remove_steps; then
+    rm -rf "$BP_TMP"
+    echo -e "${RED}Removal failed. Panel was restored to its previous state.${RESET}"
+    return 1
+  fi
+  rm -rf "$BP_TMP"
+
+  artisan up >/dev/null 2>&1
+  BP_PANEL_DOWN=0
+  hash -r
+
+  echo -e "${GREEN}Blueprint removed. Your panel is now plain Pterodactyl.${RESET}"
+  echo -e "${CYAN}Backup kept in ${BACKUP_DIR}.${RESET}"
+  echo -e "${CYAN}If you added 'source blueprint;' to .bashrc, remove that line manually.${RESET}"
+  return 0
+}
+
+# ---------- Blueprint framework menu ----------
+blueprint_menu() {
+  local C
+
+  while true; do
+    banner
+    echo -e "  ${BOLD}Blueprint Framework${RESET}"
+    echo ""
+    if blueprint_installed; then
+      echo -e "   Status: ${GREEN}● installed${RESET}"
+    else
+      echo -e "   Status: ${RED}○ not installed${RESET}"
+    fi
+    echo ""
+    echo -e "   ${GREEN} 1)${RESET} Install Blueprint"
+    echo -e "   ${RED} 2)${RESET} Remove Blueprint"
+    echo -e "   ${YELLOW} B)${RESET} Back"
+    echo ""
+    echo -e "${CYAN}  ------------------------------------------------------${RESET}"
+    read -r -p "  Select an option: " C < /dev/tty
+
+    case "$C" in
+      1)
+        install_blueprint_framework
+        pause
+        ;;
+      2)
+        if remove_blueprint_framework; then
+          echo ""
+          echo -e "${YELLOW}This helper needs Blueprint to install extensions, so it will exit now.${RESET}"
+          echo -e "${YELLOW}Run it again to install Blueprint back.${RESET}"
+          exit 0
+        fi
+        pause
+        ;;
+      B|b)
+        return 0
+        ;;
+      *)
+        echo -e "${RED}Invalid option.${RESET}"
+        pause
+        ;;
+    esac
+  done
 }
 
 install_one() {
@@ -140,7 +439,7 @@ install_one() {
   rm -f "${NAME}.blueprint"
 }
 
-# ---------- Delete / Uninstall ----------
+# ---------- Delete / Uninstall (extensions) ----------
 INSTALLED=()
 
 # Reads installed extensions from Blueprint's extensions folder
@@ -278,23 +577,11 @@ fi
 
 cd "$PANEL" || exit 1
 
-if ! command -v blueprint >/dev/null 2>&1; then
+if ! blueprint_installed; then
   echo -e "${YELLOW}Blueprint is not installed.${RESET}"
-  read -r -p "Install Blueprint now? (y/N): " ANS < /dev/tty
-  if [ "$ANS" != "y" ] && [ "$ANS" != "Y" ]; then
+  install_blueprint_framework
+  if ! blueprint_installed; then
     echo -e "${RED}Blueprint is required. Exiting.${RESET}"
-    exit 1
-  fi
-
-  echo -e "${YELLOW}Tip: take a backup of your panel before continuing.${RESET}"
-  read -r -p "Continue? (y/N): " ANS2 < /dev/tty
-  if [ "$ANS2" != "y" ] && [ "$ANS2" != "Y" ]; then
-    echo -e "${RED}Cancelled.${RESET}"
-    exit 1
-  fi
-
-  if ! install_blueprint_framework; then
-    echo -e "${RED}Blueprint install failed. Check the errors above.${RESET}"
     exit 1
   fi
   cd "$PANEL" || exit 1
@@ -465,7 +752,8 @@ while true; do
   printf "   ${CYAN}│${RESET} ${GREEN}1)${RESET} %-22s ${CYAN}│${RESET} ${GREEN}2)${RESET} %-22s ${CYAN}│${RESET}\n" "$LEFT" "$RIGHT"
   echo -e "   ${CYAN}└──────────────────────────┴──────────────────────────┘${RESET}"
   echo ""
-  echo -e "   ${YELLOW} 3)${RESET} Delete / Uninstall"
+  echo -e "   ${YELLOW} 3)${RESET} Blueprint (Install / Remove)"
+  echo -e "   ${YELLOW} 4)${RESET} Delete / Uninstall"
   echo -e "   ${RED} 0)${RESET} Exit"
   echo ""
   echo -e "${CYAN}  ------------------------------------------------------${RESET}"
@@ -474,7 +762,8 @@ while true; do
   case "$TOP" in
     1) section_menu "Blueprints" BP_URLS 0 ;;
     2) section_menu "Themes" THEME_URLS 1 ;;
-    3) remove_menu ;;
+    3) blueprint_menu ;;
+    4) remove_menu ;;
     0|Q|q)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
