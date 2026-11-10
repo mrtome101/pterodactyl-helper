@@ -192,13 +192,13 @@ remove_menu() {
 
     for ((n=1; n<=TOTAL; n++)); do
       if [ "${SEL[$n]}" = "1" ]; then
-        MARK="${GREEN}[x]${RESET}"
+        MARK="${GREEN}[+]${RESET}"
       else
         MARK="[ ]"
       fi
       TAG=""
       is_theme_name "${INSTALLED[$((n-1))]}" && TAG=" ${MAGENTA}(theme)${RESET}"
-      printf "   ${GREEN}%2d)${RESET} %b %s%b\n" "$n" "$MARK" "${INSTALLED[$((n-1))]}" "$TAG"
+      printf "   %b ${GREEN}%2d)${RESET} %s%b\n" "$MARK" "$n" "${INSTALLED[$((n-1))]}" "$TAG"
     done
 
     count=0
@@ -350,7 +350,7 @@ section_menu() {
       NAME="$(basename "${LIST[$((n-1))]}" .blueprint)"
 
       if [ "${SEL[$n]}" = "1" ]; then
-        MARK="${GREEN}[x]${RESET}"
+        MARK="${GREEN}[+]${RESET}"
       else
         MARK="[ ]"
       fi
@@ -361,7 +361,7 @@ section_menu() {
         DOT="${RED}○${RESET}"
       fi
 
-      printf "   ${GREEN}%2d)${RESET} %b %b %s\n" "$n" "$MARK" "$DOT" "$NAME"
+      printf "   %b ${GREEN}%2d)${RESET} %b %s\n" "$MARK" "$n" "$DOT" "$NAME"
     done
 
     count=0
