@@ -443,6 +443,53 @@ remove_blueprint_framework() {
   return 0
 }
 
+_bp_upgrade_steps() {
+  cd "$PANEL"
+  echo -e "${YELLOW}Running blueprint -upgrade (building assets, please wait)...${RESET}"
+  blueprint -upgrade < /dev/tty
+}
+
+update_blueprint_framework() {
+  bp_preflight || return 1
+
+  if ! blueprint_installed; then
+    echo -e "${RED}Blueprint is not installed. Install it first.${RESET}"
+    return 1
+  fi
+  if ! command -v blueprint >/dev/null 2>&1; then
+    echo -e "${RED}'blueprint' command not found. Open a new terminal (or run: source ~/.bashrc) and try again.${RESET}"
+    return 1
+  fi
+
+  echo ""
+  echo -e "${YELLOW}The panel will be in maintenance mode for a few minutes.${RESET}"
+  echo -e "${YELLOW}A full backup is created first. If the update fails, the panel is restored.${RESET}"
+  if ! ask_yn "Update Blueprint to the latest version now?"; then
+    echo -e "${RED}Cancelled.${RESET}"
+    return 1
+  fi
+
+  detect_webuser
+  bp_backup || return 1
+
+  echo -e "${YELLOW}Putting panel into maintenance mode...${RESET}"
+  artisan down >/dev/null 2>&1
+  BP_PANEL_DOWN=1
+
+  if ! bp_run_guarded _bp_upgrade_steps; then
+    echo -e "${RED}Blueprint update failed. Panel was restored.${RESET}"
+    return 1
+  fi
+
+  artisan up >/dev/null 2>&1
+  BP_PANEL_DOWN=0
+  hash -r
+
+  echo -e "${GREEN}Blueprint updated successfully.${RESET}"
+  echo -e "${CYAN}Backup kept in ${BACKUP_DIR} (delete it when you no longer need it).${RESET}"
+  return 0
+}
+
 # ---------- Blueprint framework menu ----------
 blueprint_menu() {
   local C
@@ -459,6 +506,7 @@ blueprint_menu() {
     echo ""
     echo -e "   ${GREEN} 1)${RESET} Install Blueprint"
     echo -e "   ${RED} 2)${RESET} Remove Blueprint"
+    echo -e "   ${CYAN} 3)${RESET} Update Blueprint"
     echo -e "   ${YELLOW} B)${RESET} Back"
     echo ""
     echo -e "${CYAN}  ------------------------------------------------------${RESET}"
@@ -476,6 +524,10 @@ blueprint_menu() {
           echo -e "${YELLOW}Run it again to install Blueprint back.${RESET}"
           exit 0
         fi
+        pause
+        ;;
+      3)
+        update_blueprint_framework
         pause
         ;;
       B|b)
@@ -923,9 +975,9 @@ while true; do
   echo -e "   ${CYAN}┌─────────────────────────────────┬─────────────────────────────────┐${RESET}"
   printf "   ${CYAN}│${RESET} ${GREEN}1)${RESET} %-28s ${CYAN}│${RESET} ${GREEN}2)${RESET} %-28s ${CYAN}│${RESET}\n" "$LEFT" "$RIGHT"
   echo -e "   ${CYAN}├─────────────────────────────────┼─────────────────────────────────┤${RESET}"
-  printf "   ${CYAN}│${RESET} ${YELLOW}3)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}4)${RESET} %-28s ${CYAN}│${RESET}\n" "Blueprint (Install / Remove)" "Delete / Uninstall"
+  printf "   ${CYAN}│${RESET} ${YELLOW}3)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}4)${RESET} %-28s ${CYAN}│${RESET}\n" "Blueprint (Install / Remove)" "Maintenance Mode ON/OFF"
   echo -e "   ${CYAN}├─────────────────────────────────┼─────────────────────────────────┤${RESET}"
-  printf "   ${CYAN}│${RESET} ${YELLOW}5)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}6)${RESET} %-28s ${CYAN}│${RESET}\n" "Create Admin User" "Maintenance Mode ON/OFF"
+  printf "   ${CYAN}│${RESET} ${YELLOW}5)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}6)${RESET} %-28s ${CYAN}│${RESET}\n" "Create Admin User" "Delete / Uninstall"
   echo -e "   ${CYAN}└─────────────────────────────────┴─────────────────────────────────┘${RESET}"
   echo ""
   echo -e "   ${RED} 0)${RESET} Exit"
@@ -937,9 +989,9 @@ while true; do
     1) section_menu "Blueprints" BP_URLS 0 ;;
     2) section_menu "Themes" THEME_URLS 1 ;;
     3) blueprint_menu ;;
-    4) remove_menu ;;
+    4) maintenance_menu ;;
     5) create_admin_user ;;
-    6) maintenance_menu ;;
+    6) remove_menu ;;
     0|Q|q)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
