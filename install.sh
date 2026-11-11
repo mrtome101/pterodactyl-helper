@@ -7,6 +7,9 @@ BACKUP_DIR="/root/blueprint-backups"
 # Names listed here show up under Themes. Everything else is a Blueprint.
 THEME_NAMES=("nebula")
 
+# IP is fetched only once (banner redraws many times)
+CACHED_IP=""
+
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 YELLOW='\033[1;33m'
@@ -15,8 +18,51 @@ MAGENTA='\033[1;35m'
 BOLD='\033[1m'
 RESET='\033[0m'
 
+# ---------- System info helpers ----------
+get_ip() {
+  local ip
+  ip="$(curl -s4 --max-time 3 https://api.ipify.org 2>/dev/null)"
+  [ -z "$ip" ] && ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  echo "${ip:-N/A}"
+}
+
+get_os() {
+  if [ -f /etc/os-release ]; then
+    ( . /etc/os-release; echo "${PRETTY_NAME:-$NAME}" )
+  else
+    uname -sr
+  fi
+}
+
+get_uptime() {
+  local s h m
+  s="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+  s="${s:-0}"
+  h=$((s / 3600))
+  m=$(((s % 3600) / 60))
+  echo "up ${h} hours, ${m} minutes"
+}
+
+get_mem() {
+  free -h 2>/dev/null | awk '/^Mem:/ {print $3 " / " $2}'
+}
+
+get_disk() {
+  df -h / 2>/dev/null | awk 'NR==2 {print $3 " / " $2 " (" $5 " used)"}'
+}
+
 banner() {
   clear
+  local NAME HOST IP OS UP MEM DISK
+  NAME="$(hostname -s 2>/dev/null || hostname)"
+  HOST="$(hostname -f 2>/dev/null || hostname)"
+  [ -z "$CACHED_IP" ] && CACHED_IP="$(get_ip)"
+  IP="$CACHED_IP"
+  OS="$(get_os)"
+  UP="$(get_uptime)"
+  MEM="$(get_mem)"
+  DISK="$(get_disk)"
+
   echo -e "${CYAN}"
   cat << 'EOF'
         ████████╗ ██████╗ ███╗   ███╗███████╗
@@ -27,8 +73,32 @@ banner() {
            ╚═╝    ╚═════╝ ╚═╝     ╚═╝╚══════╝
 EOF
   echo -e "${RESET}"
-  echo -e "${MAGENTA}        Pterodactyl Blueprint & Themes Installer${RESET}"
-  echo -e "${CYAN}  ------------------------------------------------------${RESET}"
+  echo -e "  ${MAGENTA}🚀  INFRASTRUCTURE, ELEVATED${RESET}"
+  echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo ""
+  echo -e "  ${BOLD}🖥️  SERVER IDENTITY${RESET}"
+  echo -e "  ${CYAN}▸${RESET} Name         │ ${NAME}"
+  echo -e "  ${CYAN}▸${RESET} Hostname     │ ${HOST}"
+  echo -e "  ${CYAN}▸${RESET} Primary IPv4 │ ${IP}"
+  echo ""
+  echo -e "  ${BOLD}⚙️  SYSTEM INFORMATION${RESET}"
+  echo -e "  ${CYAN}▸${RESET} Operating System │ ${OS}"
+  echo ""
+  echo -e "  ${BOLD}⚡ PERFORMANCE${RESET}"
+  echo -e "  🚀 Uptime       │ ${UP}"
+  echo -e "  🧠 Memory       │ ${MEM}"
+  echo -e "  💾 Disk Usage   │ ${DISK}"
+  echo ""
+  echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
+  echo -e "  ${GREEN}● ONLINE${RESET}  │ TomeStudios Infrastructure"
+  echo ""
+  echo -e "  ${BOLD}🌐 TomeStudios LINKS${RESET}"
+  echo ""
+  echo -e "  💬 Discord → https://discord.gg/pjCFdWsgCV"
+  echo -e "  🌍 Website → https://www.tomestudios.fun/"
+  echo -e "  🗳️ Github → https://github.com/mrtome101"
+  echo ""
+  echo -e "  ${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${RESET}"
   echo ""
 }
 
