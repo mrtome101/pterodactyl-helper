@@ -632,6 +632,108 @@ remove_menu() {
   done
 }
 
+# ---------- Panel tools: Create admin / Maintenance mode ----------
+
+# Runs php artisan as the panel's web user (so files stay owned correctly)
+artisan_web() {
+  detect_webuser
+  if command -v runuser >/dev/null 2>&1 && id "$WEBUSER" >/dev/null 2>&1; then
+    ( cd "$PANEL" && runuser -u "$WEBUSER" -- php artisan "$@" )
+  else
+    ( cd "$PANEL" && php artisan "$@" )
+  fi
+}
+
+maintenance_is_on() {
+  [ -f "$PANEL/storage/framework/down" ]
+}
+
+create_admin_user() {
+  banner
+  echo -e "  ${BOLD}Create Admin User${RESET}"
+  echo ""
+
+  if [ ! -f "$PANEL/artisan" ] || [ ! -f "$PANEL/.env" ]; then
+    echo -e "${RED}Valid Pterodactyl panel not found in ${PANEL}.${RESET}"
+    pause
+    return 1
+  fi
+  if ! command -v php >/dev/null 2>&1; then
+    echo -e "${RED}php is required but was not found.${RESET}"
+    pause
+    return 1
+  fi
+
+  echo -e "${YELLOW}Answer the questions below (email, username, name, password).${RESET}"
+  echo -e "${YELLOW}When it asks 'Is this user an administrator?' choose yes.${RESET}"
+  echo ""
+
+  if artisan_web p:user:make < /dev/tty; then
+    echo ""
+    echo -e "${GREEN}User created successfully.${RESET}"
+  else
+    echo ""
+    echo -e "${RED}User creation failed or was cancelled.${RESET}"
+  fi
+  pause
+}
+
+maintenance_menu() {
+  local C
+
+  while true; do
+    banner
+    echo -e "  ${BOLD}Maintenance Mode${RESET}"
+    echo ""
+    if maintenance_is_on; then
+      echo -e "   Status: ${RED}● ON  (panel is closed for visitors)${RESET}"
+    else
+      echo -e "   Status: ${GREEN}● OFF (panel is live)${RESET}"
+    fi
+    echo ""
+    echo -e "   ${RED} 1)${RESET} Turn ON"
+    echo -e "   ${GREEN} 2)${RESET} Turn OFF"
+    echo -e "   ${YELLOW} B)${RESET} Back"
+    echo ""
+    echo -e "${CYAN}  ------------------------------------------------------${RESET}"
+    read -r -p "  Select an option: " C < /dev/tty
+
+    case "$C" in
+      1)
+        if maintenance_is_on; then
+          echo -e "${YELLOW}Maintenance mode is already ON.${RESET}"
+        elif ask_yn "Users will not be able to open the panel. Turn ON?"; then
+          if artisan_web down >/dev/null 2>&1; then
+            echo -e "${GREEN}Maintenance mode is now ON.${RESET}"
+          else
+            echo -e "${RED}Could not turn maintenance mode ON.${RESET}"
+          fi
+        else
+          echo -e "${RED}Cancelled.${RESET}"
+        fi
+        pause
+        ;;
+      2)
+        if ! maintenance_is_on; then
+          echo -e "${YELLOW}Maintenance mode is already OFF.${RESET}"
+        elif artisan_web up >/dev/null 2>&1; then
+          echo -e "${GREEN}Maintenance mode is now OFF. Panel is live.${RESET}"
+        else
+          echo -e "${RED}Could not turn maintenance mode OFF.${RESET}"
+        fi
+        pause
+        ;;
+      B|b)
+        return 0
+        ;;
+      *)
+        echo -e "${RED}Invalid option.${RESET}"
+        pause
+        ;;
+    esac
+  done
+}
+
 # ---------- Checks ----------
 banner
 
@@ -822,6 +924,8 @@ while true; do
   printf "   ${CYAN}│${RESET} ${GREEN}1)${RESET} %-28s ${CYAN}│${RESET} ${GREEN}2)${RESET} %-28s ${CYAN}│${RESET}\n" "$LEFT" "$RIGHT"
   echo -e "   ${CYAN}├─────────────────────────────────┼─────────────────────────────────┤${RESET}"
   printf "   ${CYAN}│${RESET} ${YELLOW}3)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}4)${RESET} %-28s ${CYAN}│${RESET}\n" "Blueprint (Install / Remove)" "Delete / Uninstall"
+  echo -e "   ${CYAN}├─────────────────────────────────┼─────────────────────────────────┤${RESET}"
+  printf "   ${CYAN}│${RESET} ${YELLOW}5)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}6)${RESET} %-28s ${CYAN}│${RESET}\n" "Create Admin User" "Maintenance Mode ON/OFF"
   echo -e "   ${CYAN}└─────────────────────────────────┴─────────────────────────────────┘${RESET}"
   echo ""
   echo -e "   ${RED} 0)${RESET} Exit"
@@ -834,6 +938,8 @@ while true; do
     2) section_menu "Themes" THEME_URLS 1 ;;
     3) blueprint_menu ;;
     4) remove_menu ;;
+    5) create_admin_user ;;
+    6) maintenance_menu ;;
     0|Q|q)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
