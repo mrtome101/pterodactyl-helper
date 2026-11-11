@@ -970,17 +970,24 @@ section_menu() {
 }
 
 # ---------- Main menu (left: Blueprints | right: Themes) ----------
+# One table row. $1=left key  $2=left text  $3=right key  $4=right text  $5=key color
+# Cell width = 1 space + "N) " (3) + 28 text + 1 space = 33, same as the border LINE below.
+menu_row() {
+  printf "   ${CYAN}│${RESET} ${5}%s)${RESET} %-28s ${CYAN}│${RESET} ${5}%s)${RESET} %-28s ${CYAN}│${RESET}\n" "$1" "$2" "$3" "$4"
+}
+
 while true; do
   banner
   LEFT="Blueprints (${#BP_URLS[@]})"
   RIGHT="Themes (${#THEME_URLS[@]})"
-  echo -e "   ${CYAN}┌───────────────────────────────┬───────────────────────────────┐${RESET}"
-  printf "    ${CYAN}│${RESET} ${GREEN}1)${RESET} %-28s ${CYAN}│${RESET} ${GREEN}2)${RESET} %-28s ${CYAN}│${RESET}\n" "$LEFT" "$RIGHT"
-  echo -e "   ${CYAN}├───────────────────────────────┼───────────────────────────────┤${RESET}"
-  printf "    ${CYAN}│${RESET} ${YELLOW}3)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}4)${RESET} %-28s ${CYAN}│${RESET}\n" "Blueprint (Install / Remove)" "Maintenance Mode ON/OFF"
-  echo -e "   ${CYAN}├───────────────────────────────┼───────────────────────────────┤${RESET}"
-  printf "    ${CYAN}│${RESET} ${YELLOW}5)${RESET} %-28s ${CYAN}│${RESET} ${YELLOW}6)${RESET} %-28s ${CYAN}│${RESET}\n" "Create Admin User" "Delete / Uninstall"
-  echo -e "   ${CYAN}└───────────────────────────────┴───────────────────────────────┘${RESET}"
+  LINE="─────────────────────────────────"   # 33 chars
+  echo -e "   ${CYAN}┌${LINE}┬${LINE}┐${RESET}"
+  menu_row 1 "$LEFT" 2 "$RIGHT" "$GREEN"
+  echo -e "   ${CYAN}├${LINE}┼${LINE}┤${RESET}"
+  menu_row 3 "Blueprint (Install / Remove)" 4 "Maintenance Mode ON/OFF" "$YELLOW"
+  echo -e "   ${CYAN}├${LINE}┼${LINE}┤${RESET}"
+  menu_row 5 "Create Admin User" 6 "Delete / Uninstall" "$YELLOW"
+  echo -e "   ${CYAN}└${LINE}┴${LINE}┘${RESET}"
   echo ""
   echo -e "   ${RED} 0)${RESET} Exit"
   echo ""
