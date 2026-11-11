@@ -619,7 +619,7 @@ remove_menu() {
       fi
       TAG=""
       is_theme_name "${INSTALLED[$((n-1))]}" && TAG=" ${MAGENTA}(theme)${RESET}"
-      printf "   %b ${GREEN}%2d)${RESET} %s%b\n" "$MARK" "$n" "${INSTALLED[$((n-1))]}" "$TAG"
+      printf "   %b ${GREEN}%2d)${RESET} ${GREEN}●${RESET} %s%b\n" "$MARK" "$n" "${INSTALLED[$((n-1))]}" "$TAG"
     done
 
     count=0
@@ -627,6 +627,8 @@ remove_menu() {
       [ "${SEL[$k]}" = "1" ] && count=$((count+1))
     done
 
+    echo ""
+    echo -e "   ${GREEN}●${RESET} = installed"
     echo ""
     echo -e "   ${YELLOW} B)${RESET} Back"
     echo -e "   ${CYAN}Enter)${RESET} Delete selected (${count} selected)"
