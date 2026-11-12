@@ -788,6 +788,237 @@ maintenance_menu() {
   done
 }
 
+# ---------- Database setup ----------
+MARIADB_CNF="/etc/mysql/mariadb.conf.d/50-server.cnf"
+DB_ROOT_PW=""
+
+db_sql() {
+  if [ -n "$DB_ROOT_PW" ]; then
+    MYSQL_PWD="$DB_ROOT_PW" mysql -u root "$@"
+  else
+    mysql -u root "$@"
+  fi
+}
+
+# Escapes a value for use inside '...' in SQL
+sql_esc() {
+  local s="${1//\\/\\\\}"
+  s="${s//\'/\\\'}"
+  printf '%s' "$s"
+}
+
+db_connect() {
+  if ! command -v mysql >/dev/null 2>&1; then
+    echo -e "${RED}mysql / mariadb client not found. Install mariadb-server first.${RESET}"
+    return 1
+  fi
+  DB_ROOT_PW=""
+  db_sql -e "SELECT 1" >/dev/null 2>&1 && return 0
+
+  read -r -s -p "  MySQL root password: " DB_ROOT_PW < /dev/tty
+  echo ""
+  if ! db_sql -e "SELECT 1" >/dev/null 2>&1; then
+    echo -e "${RED}Could not connect as root (wrong password or server down).${RESET}"
+    DB_ROOT_PW=""
+    return 1
+  fi
+  return 0
+}
+
+db_restart() {
+  systemctl restart mariadb 2>/dev/null || systemctl restart mysql 2>/dev/null
+}
+
+db_create_user() {
+  local DBN DBU DBH DBP MODE GEN=0
+
+  db_connect || return 1
+
+  read -r -p "  Username: " DBU < /dev/tty
+  if ! [[ "$DBU" =~ ^[A-Za-z0-9_]{1,32}$ ]]; then
+    echo -e "${RED}Username: only letters, numbers, underscore (max 32).${RESET}"
+    return 1
+  fi
+
+  read -r -p "  Allowed host [% = anywhere, or e.g. 127.0.0.1] (default %): " DBH < /dev/tty
+  DBH="${DBH:-%}"
+  if ! [[ "$DBH" =~ ^[A-Za-z0-9._%:-]+$ ]]; then
+    echo -e "${RED}Invalid host.${RESET}"
+    return 1
+  fi
+
+  read -r -s -p "  Password (leave empty to auto-generate): " DBP < /dev/tty
+  echo ""
+  if [ -z "$DBP" ]; then
+    DBP="$(openssl rand -base64 48 2>/dev/null | tr -dc 'A-Za-z0-9' | head -c 24)"
+    [ -z "$DBP" ] && DBP="$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24)"
+    GEN=1
+  fi
+
+  echo ""
+  echo -e "   ${GREEN}1)${RESET} Limited  - access to ONE database only (recommended)"
+  echo -e "   ${RED}2)${RESET} Full admin - ALL privileges on everything (dangerous)"
+  read -r -p "  Select access type: " MODE < /dev/tty
+
+  local EU EH EP
+  EU="$(sql_esc "$DBU")"; EH="$(sql_esc "$DBH")"; EP="$(sql_esc "$DBP")"
+
+  case "$MODE" in
+    1)
+      read -r -p "  Database name (will be created if missing): " DBN < /dev/tty
+      if ! [[ "$DBN" =~ ^[A-Za-z0-9_]{1,64}$ ]]; then
+        echo -e "${RED}Database name: only letters, numbers, underscore.${RESET}"
+        return 1
+      fi
+      if ! db_sql <<SQL
+CREATE DATABASE IF NOT EXISTS \`${DBN}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${EU}'@'${EH}' IDENTIFIED BY '${EP}';
+ALTER USER '${EU}'@'${EH}' IDENTIFIED BY '${EP}';
+GRANT ALL PRIVILEGES ON \`${DBN}\`.* TO '${EU}'@'${EH}';
+FLUSH PRIVILEGES;
+SQL
+      then
+        echo -e "${RED}Failed to create database/user.${RESET}"
+        return 1
+      fi
+      ;;
+    2)
+      echo -e "${RED}This user will be able to read/modify/delete EVERY database.${RESET}"
+      ask_yn "Are you really sure?" || { echo -e "${RED}Cancelled.${RESET}"; return 1; }
+      if ! db_sql <<SQL
+CREATE USER IF NOT EXISTS '${EU}'@'${EH}' IDENTIFIED BY '${EP}';
+ALTER USER '${EU}'@'${EH}' IDENTIFIED BY '${EP}';
+GRANT ALL PRIVILEGES ON *.* TO '${EU}'@'${EH}' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+SQL
+      then
+        echo -e "${RED}Failed to create user.${RESET}"
+        return 1
+      fi
+      ;;
+    *)
+      echo -e "${RED}Invalid option.${RESET}"
+      return 1
+      ;;
+  esac
+
+  echo ""
+  echo -e "${GREEN}Done. Save these details:${RESET}"
+  echo -e "  Host     : $(get_ip) (port 3306)"
+  [ "$MODE" = "1" ] && echo -e "  Database : ${DBN}"
+  echo -e "  Username : ${DBU}"
+  echo -e "  Password : ${DBP}$([ "$GEN" = "1" ] && echo '  (auto-generated)')"
+  echo -e "  Allowed  : ${DBH}"
+  return 0
+}
+
+db_remote_status() {
+  local v
+  v="$(grep -E '^\s*bind-address' "$MARIADB_CNF" 2>/dev/null | head -n1 | awk -F= '{gsub(/ /,"",$2); print $2}')"
+  echo "${v:-unknown}"
+}
+
+db_set_remote() {
+  local MODE="$1"   # on / off
+  if [ ! -f "$MARIADB_CNF" ]; then
+    echo -e "${RED}Config not found: ${MARIADB_CNF}${RESET}"
+    return 1
+  fi
+
+  cp -p "$MARIADB_CNF" "${MARIADB_CNF}.bak-$(date +%Y%m%d-%H%M%S)" || return 1
+
+  local TARGET="127.0.0.1"
+  [ "$MODE" = "on" ] && TARGET="0.0.0.0"
+
+  if grep -qE '^\s*#?\s*bind-address' "$MARIADB_CNF"; then
+    sed -i -E "s|^\s*#?\s*bind-address.*|bind-address = ${TARGET}|" "$MARIADB_CNF"
+  else
+    sed -i -E "/^\[mysqld\]/a bind-address = ${TARGET}" "$MARIADB_CNF"
+  fi
+
+  echo -e "${YELLOW}Restarting database service...${RESET}"
+  if db_restart; then
+    echo -e "${GREEN}bind-address is now ${TARGET}.${RESET}"
+    if [ "$MODE" = "on" ]; then
+      echo -e "${YELLOW}Open port 3306 in your firewall, ideally ONLY for trusted IPs:${RESET}"
+      echo -e "  ufw allow from <YOUR_IP> to any port 3306 proto tcp"
+    fi
+  else
+    echo -e "${RED}Restart failed. Config backup is next to ${MARIADB_CNF}.${RESET}"
+    return 1
+  fi
+}
+
+db_list_users() {
+  db_connect || return 1
+  echo ""
+  db_sql -e "SELECT User, Host FROM mysql.user ORDER BY User;"
+  echo ""
+  db_sql -e "SHOW DATABASES;"
+}
+
+db_delete_user() {
+  local U H
+  db_connect || return 1
+  read -r -p "  Username to delete: " U < /dev/tty
+  read -r -p "  Host of that user (default %): " H < /dev/tty
+  H="${H:-%}"
+  if ! [[ "$U" =~ ^[A-Za-z0-9_]{1,32}$ ]] || [ "$U" = "root" ]; then
+    echo -e "${RED}Invalid username (root cannot be deleted here).${RESET}"
+    return 1
+  fi
+  if [[ "$U" = "pterodactyl" ]]; then
+    echo -e "${YELLOW}Warning: this may be your panel's DB user!${RESET}"
+  fi
+  ask_yn "Delete '${U}'@'${H}'? (databases are NOT deleted)" || { echo -e "${RED}Cancelled.${RESET}"; return 1; }
+  db_sql -e "DROP USER '$(sql_esc "$U")'@'$(sql_esc "$H")'; FLUSH PRIVILEGES;" \
+    && echo -e "${GREEN}User deleted.${RESET}" \
+    || echo -e "${RED}Failed.${RESET}"
+}
+
+database_menu() {
+  local C R
+
+  while true; do
+    banner
+    echo -e "  ${BOLD}Database Setup${RESET}"
+    echo ""
+    R="$(db_remote_status)"
+    if [ "$R" = "0.0.0.0" ]; then
+      echo -e "   Remote access: ${YELLOW}● ON  (bind-address ${R})${RESET}"
+    else
+      echo -e "   Remote access: ${GREEN}● local only (bind-address ${R})${RESET}"
+    fi
+    echo ""
+    echo -e "   ${GREEN} 1)${RESET} Create database / user"
+    echo -e "   ${YELLOW} 2)${RESET} Enable remote access (bind 0.0.0.0)"
+    echo -e "   ${YELLOW} 3)${RESET} Disable remote access (bind 127.0.0.1)"
+    echo -e "   ${CYAN} 4)${RESET} List users & databases"
+    echo -e "   ${RED} 5)${RESET} Delete a user"
+    echo -e "   ${YELLOW} B)${RESET} Back"
+    echo ""
+    echo -e "${CYAN}  ------------------------------------------------------${RESET}"
+    read -r -p "  Select an option: " C < /dev/tty
+
+    case "$C" in
+      1) db_create_user; pause ;;
+      2)
+        if ask_yn "Allow outside connections to the database?"; then
+          db_set_remote on
+        else
+          echo -e "${RED}Cancelled.${RESET}"
+        fi
+        pause
+        ;;
+      3) db_set_remote off; pause ;;
+      4) db_list_users; pause ;;
+      5) db_delete_user; pause ;;
+      B|b) return 0 ;;
+      *) echo -e "${RED}Invalid option.${RESET}"; pause ;;
+    esac
+  done
+}
+
 # ---------- Checks ----------
 banner
 
@@ -987,6 +1218,8 @@ while true; do
   menu_row 3 "Blueprint (Install / Remove)" 4 "Maintenance Mode ON/OFF" "$YELLOW"
   echo -e "   ${CYAN}├${LINE}┼${LINE}┤${RESET}"
   menu_row 5 "Create Admin User" 6 "Delete / Uninstall" "$YELLOW"
+  echo -e "   ${CYAN}├${LINE}┼${LINE}┤${RESET}"
+  menu_row 7 "Database Setup" 8 "Database Users / List" "$YELLOW"
   echo -e "   ${CYAN}└${LINE}┴${LINE}┘${RESET}"
   echo ""
   echo -e "   ${RED} 0)${RESET} Exit"
@@ -1001,6 +1234,8 @@ while true; do
     4) maintenance_menu ;;
     5) create_admin_user ;;
     6) remove_menu ;;
+    7) database_menu ;;
+    8) db_list_users; pause ;;
     0|Q|q)
       echo -e "${GREEN}Goodbye!${RESET}"
       exit 0
